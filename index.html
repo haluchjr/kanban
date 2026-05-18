@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kanban Dashboard - PHP + SQLite 🥋</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+    <style>
+        .ghost {
+            opacity: 0.4;
+            background: #f3f4f6;
+        }
+        .chosen {
+            opacity: 0.9;
+        }
+        .drag {
+            cursor: move;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1000;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.5);
+        }
+        .modal.active {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen p-6">
+    
+    <!-- Header -->
+    <div class="max-w-7xl mx-auto mb-6">
+        <div class="flex justify-between items-center mb-4">
+            <h1 class="text-3xl font-bold text-gray-800">🥋 Kanban Dashboard</h1>
+            <button onclick="openAddCardModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-semibold">
+                ➕ Novo Card
+            </button>
+        </div>
+        
+        <!-- Controle de Colunas -->
+        <div class="bg-white rounded-lg shadow p-4 mb-4">
+            <label class="block text-sm font-medium text-gray-700 mb-2">
+                Número de Colunas: <span id="columnCount" class="font-bold text-blue-600">4</span>
+            </label>
+            <input 
+                type="range" 
+                id="columnSlider" 
+                min="2" 
+                max="6" 
+                value="4" 
+                class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+            >
+            <div class="flex justify-between text-xs text-gray-500 mt-1">
+                <span>2</span>
+                <span>3</span>
+                <span>4</span>
+                <span>5</span>
+                <span>6</span>
+            </div>
+        </div>
+        
+        <!-- Status bar -->
+        <div id="statusBar" class="hidden bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-4" role="alert">
+            <span class="block sm:inline" id="statusMessage"></span>
+        </div>
+    </div>
+
+    <!-- Board Kanban -->
+    <div class="max-w-7xl mx-auto">
+        <div id="kanbanBoard" class="grid gap-4 auto-cols-fr">
+            <div class="flex items-center justify-center h-64">
+                <div class="text-gray-500">Carregando...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Adicionar/Editar Card -->
+    <div id="cardModal" class="modal">
+        <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h2 class="text-2xl font-bold mb-4" id="modalTitle">Novo Card</h2>
+            
+            <form id="cardForm" onsubmit="saveCard(event)">
+                <input type="hidden" id="cardId">
+                
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Título *</label>
+                    <input type="text" id="cardTitle" required class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Descrição</label>
+                    <textarea id="cardDescription" rows="3" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"></textarea>
+                </div>
+                
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Prioridade</label>
+                    <select id="cardPriority" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="low">Baixa</option>
+                        <option value="medium" selected>Média</option>
+                        <option value="high">Alta</option>
+                    </select>
+                </div>
+                
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-2">Tags (separadas por vírgula)</label>
+                    <input type="text" id="cardTags" placeholder="Backend, PHP, Bug" class="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                
+                <div class="flex justify-end gap-2">
+                    <button type="button" onclick="closeCardModal()" class="px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50">
+                        Cancelar
+                    </button>
+                    <button type="submit" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">
+                        Salvar
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = 'api/kanban.php';
+        
+        const COLUMN_CONFIGS = {
+            2: ['📋 To Do', '✅ Done'],
+            3: ['📋 To Do', '🚧 In Progress', '✅ Done'],
+            4: ['📋 Backlog', '📝 To Do', '🚧 In Progress', '✅ Done'],
+            5: ['📋 Backlog', '📝 To Do', '🚧 In Progress', '🧪 Testing', '✅ Done'],
+            6: ['📋 Backlog', '📝 To Do', '🚧 In Progress', '👀 Review', '🧪 Testing', '✅ Done']
+        };
+
+        const priorityColors = {
+            high: 'bg-red-100 text-red-800 border-red-300',
+            medium: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+            low: 'bg-green-100 text-green-800 border-green-300'
+        };
+
+        const priorityLabels = {
+            high: 'Alta',
+            medium: 'Média',
+            low: 'Baixa'
+        };
+
+        let sortableInstances = [];
+        let currentCards = [];
+        let currentNumColumns = 4;
+
+        // Inicialização
+        document.addEventListener('DOMContentLoaded', async () => {
+            await loadConfig();
+            await loadCards();
+            setupSlider();
+        });
+
+        // Carregar configuração
+        async function loadConfig() {
+            try {
+                const response = await fetch(`${API_BASE}?action=config`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentNumColumns = data.config.num_columns;
+                    document.getElementById('columnSlider').value = currentNumColumns;
+                    document.getElementById('columnCount').textContent = currentNumColumns;
+                }
+            } catch (error) {
+                console.error('Erro ao carregar config:', error);
+            }
+        }
+
+        // Carregar cards
+        async function loadCards() {
+            try {
+                const response = await fetch(`${API_BASE}?action=cards`);
+                const data = await response.json();
+                
+                if (data.success) {
+                    currentCards = data.cards;
+                    renderBoard(currentNumColumns);
+                }
+            } catch (error) {
+                console.error('Erro ao carregar cards:', error);
+                showStatus('Erro ao carregar cards', 'error');
+            }
+        }
+
+        // Criar HTML do card
+        function createCard(card) {
+            const priorityClass = priorityColors[card.priority];
+            const tagsHtml = card.tags.map(tag => 
+                `<span class="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded">${tag}</span>`
+            ).join('');
+            
+            return `
+                <div class="bg-white rounded-lg shadow-sm p-4 mb-3 border-l-4 ${priorityClass} hover:shadow-md transition-shadow cursor-move" 
+                     data-id="${card.id}">
+                    <div class="flex justify-between items-start mb-2">
+                        <h3 class="font-semibold text-gray-800 flex-1">${escapeHtml(card.title)}</h3>
+                        <button onclick="deleteCard(${card.id})" class="text-red-500 hover:text-red-700 ml-2">
+                            🗑️
+                        </button>
+                    </div>
+                    ${card.description ? `<p class="text-sm text-gray-600 mb-2">${escapeHtml(card.description)}</p>` : ''}
+                    <div class="flex flex-wrap gap-1 mb-2">
+                        ${tagsHtml}
+                    </div>
+                    <div class="flex justify-between items-center text-xs text-gray-500">
+                        <span>${priorityLabels[card.priority]}</span>
+                        <button onclick="editCard(${card.id})" class="text-blue-600 hover:underline">
+                            Editar
+                        </button>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Criar coluna
+        function createColumn(name, index) {
+            return `
+                <div class="bg-gray-50 rounded-lg p-4 min-h-[500px]">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-lg font-bold text-gray-700">${name}</h2>
+                        <span class="column-count bg-gray-200 text-gray-600 text-xs font-semibold px-2 py-1 rounded-full">
+                            0
+                        </span>
+                    </div>
+                    <div class="kanban-column min-h-[400px]" data-column="${index}">
+                    </div>
+                </div>
+            `;
+        }
+
+        // Renderizar board
+        function renderBoard(numColumns) {
+            const board = document.getElementById('kanbanBoard');
+            const columns = COLUMN_CONFIGS[numColumns];
+            
+            // Limpar sortable instances
+            sortableInstances.forEach(instance => instance.destroy());
+            sortableInstances = [];
+            
+            // Grid layout
+            board.style.gridTemplateColumns = `repeat(${numColumns}, 1fr)`;
+            
+            // Gerar colunas
+            board.innerHTML = columns.map((name, index) => createColumn(name, index)).join('');
+            
+            // Distribuir cards
+            currentCards.forEach(card => {
+                if (card.column_index < numColumns) {
+                    const column = board.querySelector(`[data-column="${card.column_index}"]`);
+                    if (column) {
+                        column.innerHTML += createCard(card);
+                    }
+                }
+            });
+            
+            // Atualizar contadores
+            document.querySelectorAll('.kanban-column').forEach(col => updateColumnCount(col));
+            
+            // Inicializar Sortable
+            document.querySelectorAll('.kanban-column').forEach(column => {
+                const sortable = new Sortable(column, {
+                    group: 'kanban',
+                    animation: 200,
+                    ghostClass: 'ghost',
+                    chosenClass: 'chosen',
+                    dragClass: 'drag',
+                    onEnd: async function(evt) {
+                        const cardId = evt.item.dataset.id;
+                        const newColumnIndex = parseInt(evt.to.dataset.column);
+                        const newPosition = evt.newIndex;
+                        
+                        await moveCardApi(cardId, newColumnIndex, newPosition);
+                        updateColumnCount(evt.from);
+                        updateColumnCount(evt.to);
+                    }
+                });
+                sortableInstances.push(sortable);
+            });
+        }
+
+        // Atualizar contador
+        function updateColumnCount(column) {
+            const count = column.children.length;
+            const badge = column.parentElement.querySelector('.column-count');
+            badge.textContent = count;
+        }
+
+        // Setup slider
+        function setupSlider() {
+            const slider = document.getElementById('columnSlider');
+            const countDisplay = document.getElementById('columnCount');
+            
+            slider.addEventListener('change', async (e) => {
+                const value = parseInt(e.target.value);
+                countDisplay.textContent = value;
+                currentNumColumns = value;
+                
+                // Salvar no backend
+                await updateConfigApi(value);
+                renderBoard(value);
+            });
+        }
+
+        // API: Mover card
+        async function moveCardApi(cardId, columnIndex, position) {
+            try {
+                const response = await fetch(`${API_BASE}?action=move`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ card_id: cardId, column_index: columnIndex, position: position })
+                });
+                
+                const data = await response.json();
+                if (!data.success) {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                console.error('Erro ao mover card:', error);
+                showStatus('Erro ao mover card', 'error');
+                await loadCards();
+            }
+        }
+
+        // API: Atualizar config
+        async function updateConfigApi(numColumns) {
+            try {
+                const response = await fetch(`${API_BASE}?action=config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ num_columns: numColumns })
+                });
+                
+                const data = await response.json();
+                if (!data.success) {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                console.error('Erro ao atualizar config:', error);
+            }
+        }
+
+        // Modal functions
+        function openAddCardModal() {
+            document.getElementById('modalTitle').textContent = 'Novo Card';
+            document.getElementById('cardForm').reset();
+            document.getElementById('cardId').value = '';
+            document.getElementById('cardModal').classList.add('active');
+        }
+
+        function closeCardModal() {
+            document.getElementById('cardModal').classList.remove('active');
+        }
+
+        async function saveCard(event) {
+            event.preventDefault();
+            
+            const id = document.getElementById('cardId').value;
+            const title = document.getElementById('cardTitle').value;
+            const description = document.getElementById('cardDescription').value;
+            const priority = document.getElementById('cardPriority').value;
+            const tagsInput = document.getElementById('cardTags').value;
+            const tags = tagsInput ? tagsInput.split(',').map(t => t.trim()).filter(t => t) : [];
+            
+            try {
+                const url = id ? `${API_BASE}?action=card` : `${API_BASE}?action=card`;
+                const method = id ? 'PUT' : 'POST';
+                
+                const body = { title, description, priority, tags };
+                if (id) body.id = id;
+                else body.column_index = 0;
+                
+                const response = await fetch(url, {
+                    method: method,
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    closeCardModal();
+                    await loadCards();
+                    showStatus(id ? 'Card atualizado!' : 'Card criado!', 'success');
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                console.error('Erro ao salvar card:', error);
+                showStatus('Erro ao salvar card', 'error');
+            }
+        }
+
+        async function editCard(id) {
+            const card = currentCards.find(c => c.id == id);
+            if (!card) return;
+            
+            document.getElementById('modalTitle').textContent = 'Editar Card';
+            document.getElementById('cardId').value = card.id;
+            document.getElementById('cardTitle').value = card.title;
+            document.getElementById('cardDescription').value = card.description || '';
+            document.getElementById('cardPriority').value = card.priority;
+            document.getElementById('cardTags').value = card.tags.join(', ');
+            
+            document.getElementById('cardModal').classList.add('active');
+        }
+
+        async function deleteCard(id) {
+            if (!confirm('Deseja realmente excluir este card?')) return;
+            
+            try {
+                const response = await fetch(`${API_BASE}?action=card&id=${id}`, {
+                    method: 'DELETE'
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    await loadCards();
+                    showStatus('Card excluído!', 'success');
+                } else {
+                    throw new Error(data.error);
+                }
+            } catch (error) {
+                console.error('Erro ao excluir card:', error);
+                showStatus('Erro ao excluir card', 'error');
+            }
+        }
+
+        // Utilidades
+        function showStatus(message, type = 'success') {
+            const statusBar = document.getElementById('statusBar');
+            const statusMessage = document.getElementById('statusMessage');
+            
+            statusBar.className = type === 'success' 
+                ? 'bg-green-100 border border-green-400 text-green-700 px-4 py-3 rounded relative mb-4'
+                : 'bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-4';
+            
+            statusMessage.textContent = message;
+            statusBar.classList.remove('hidden');
+            
+            setTimeout(() => {
+                statusBar.classList.add('hidden');
+            }, 3000);
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Fechar modal ao clicar fora
+        document.getElementById('cardModal').addEventListener('click', (e) => {
+            if (e.target.id === 'cardModal') {
+                closeCardModal();
+            }
+        });
+    </script>
+
+</body>
+</html>
